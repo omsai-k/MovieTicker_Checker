@@ -1,12 +1,11 @@
 import os, re, sys, subprocess
-from datetime import datetime, date, time
-from zoneinfo import ZoneInfo
+from datetime import datetime, date, time, timezone, timedelta
 import requests
 
 MOVIE_KEYWORD = "doomsday"
 RELEASE_DATE = date(2026, 12, 18)   # verify the India release date
 CITY_SLUG = "bengaluru"
-IST = ZoneInfo("Asia/Kolkata")
+IST = timezone(timedelta(hours=5, minutes=30))
 
 # IST windows (start, end); the first one wraps past midnight
 WINDOWS = [
@@ -18,7 +17,7 @@ WINDOWS = [
 SOURCES = {
     "BookMyShow": [
         f"https://in.bookmyshow.com/explore/movies-{CITY_SLUG}",
-        f"https://in.bookmyshow.com/search?q=avengers%20doomsday",
+        "https://in.bookmyshow.com/search?q=avengers%20doomsday",
     ],
     "PVR INOX": [
         "https://www.pvrcinemas.com/",
@@ -65,7 +64,6 @@ def check(url):
         idx = text.lower().find(MOVIE_KEYWORD)
         if idx == -1:
             return False
-        # look for booking language near the movie mention
         context = text[max(0, idx - 1500): idx + 1500]
         return bool(BOOKING_HINTS.search(context))
     except requests.RequestException as e:
@@ -74,25 +72,39 @@ def check(url):
 
 
 def notify(msg):
-    token, chat = os.getenv("TELEGRAM_TOKEN"), os.getenv("TELEGRAM_CHAT_ID")
-    if not token or not chat:
-        print("No Telegram creds set:", msg); return
-    requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
-                  data={"chat_id": chat, "text": msg}, timeout=20)
+    topic = os.getenv("NTFY_TOPIC")
+    discord = os.getenv("DISCORD_WEBHOOK")
+    sent = False
+    if topic:
+        r = requests.post(
+            f"https://ntfy.sh/{topic}",
+            data=msg.encode("utf-8"),
+            headers={"Title": "Avengers Doomsday", "Priority": "urgent", "Tags": "movie_camera"},
+            timeout=20,
+        )
+        print("ntfy status:", r.status_code)
+        sent = True
+    if discord:
+        requests.post(discord, json={"content": msg}, timeout=20)
+        sent = True
+    if not sent:
+        print("No notification channel configured:", msg)
 
 
 def main():
     if "--test" in sys.argv:
-        notify("✅ Avengers Doomsday ticket watcher: test alert works"); return
+        notify("Avengers Doomsday ticket watcher: test alert works")
+        return
     now = datetime.now(IST)
     if "--force" not in sys.argv and not should_run(now):
-        print(f"{now:%H:%M IST} - not a check slot, skipping"); return
+        print(f"{now:%H:%M IST} - not a check slot, skipping")
+        return
 
     print(f"{now:%Y-%m-%d %H:%M IST} - checking")
     hits = [(site, url) for site, urls in SOURCES.items() for url in urls if check(url)]
     if hits:
         lines = "\n".join(f"{s}: {u}" for s, u in hits)
-        notify(f"🎬 Avengers: Doomsday tickets may be LIVE!\n{lines}")
+        notify(f"Avengers: Doomsday tickets may be LIVE!\n{lines}")
         if os.getenv("GITHUB_ACTIONS"):
             subprocess.run(["gh", "workflow", "disable", "ticket-check.yml"])
     else:
